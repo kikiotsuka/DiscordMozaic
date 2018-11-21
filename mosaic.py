@@ -23,7 +23,7 @@ EMOJI_DATA_FILE = 'emoji-data.txt'
 EMOJI_CACHE_FILE = 'emoji_cache.txt'
 EMOJI_RES_DIR = 'res/'
 
-MAX_PRINTABLE_ROWS = 5
+MAX_PRINTABLE_ROWS = 4
 
 PICKLE_FILE = 'emoji_tree.pickle'
 
@@ -179,6 +179,30 @@ async def on_message(message):
             elif command.startswith('mosaicify'):
                 print('Mosaicify invoked')
                 await mosaicify(message.channel, message.attachments)
+            elif command.startswith('cleanup'):
+                print('Cleanup invoked')
+                await cleanup(message)
+
+async def cleanup(message):
+    '''
+        Removes all messages by the person mentioned
+    '''
+    channel = message.channel
+    mentions = message.mentions
+    data = message.content.split()
+
+    if len(data) > 1 and data[1].isdigit():
+        num_remove = int(data[1])
+    else:
+        await channel.send('Error: Expected the number of messages to remove')
+
+    if not mentions:
+        delete_criteria = lambda _: True
+    else:
+        delete_criteria = lambda x: x.author in mentions
+
+    removed = await channel.purge(limit=num_remove, check=delete_criteria)
+    await channel.send('Removed {} message(s)'.format(len(removed)))
 
 async def mosaicify(channel, image):
     if not image or image[0].height is None:
@@ -227,8 +251,10 @@ def compute_mosaic(filename):
     print('Image dim is {}x{}'.format(img.width, img.height))
     emoji_str = ''
     row_count = 0
-    for y in range(0, img.height, EMOJI_DIM):
-        for x in range(0, img.width, EMOJI_DIM):
+    for col in range(img.height // EMOJI_DIM):
+        y = col * EMOJI_DIM
+        for row in range(img.width // EMOJI_DIM):
+            x = row * EMOJI_DIM
             avg_color = calc_avg_color(img.crop((x, y, x + EMOJI_DIM, y + EMOJI_DIM)))
             emoji_str += emoji_tree.nearest_emoji(avg_color)
         row_count += 1
