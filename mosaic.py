@@ -23,6 +23,8 @@ EMOJI_DATA_FILE = 'emoji-data.txt'
 EMOJI_CACHE_FILE = 'emoji_cache.txt'
 EMOJI_RES_DIR = 'res/'
 
+MAX_PRINTABLE_ROWS = 5
+
 PICKLE_FILE = 'emoji_tree.pickle'
 
 COMMAND_PREFIX = '?'
@@ -57,33 +59,48 @@ class KDNode:
             else:
                 self._right.insert(key, val, depth + 1)
 
+    def nearest_emoji(self, key):
+        return self.nearest_neighbor(key)[1]
+
     def nearest_neighbor(self, key, depth=0):
+        best = (self._key, self.val)
+        # At leaf node
         if self._left is None and self._right is None:
-            return self._key
-        print('Key: {}; Depth: {}; Dist: {}'.format(self._key, depth, euclid(key, self._key)))
+            return best
+
+        best_dist = euclid_squared(self._key, key)
+        #print('Key: {}; Depth: {}; Dist: {}'.format(self._key, depth, math.sqrt(best_dist)))
         axis = depth % len(key)
-        best = self._key
+
+        # Find best in subtree
+        best_subtree = None
         hypersphere_check = None
         if key[axis] < self._key[axis]:
             if self._left is not None:
-                best = closer(key, best, self._left.nearest_neighbor(key, depth + 1))
+                best_subtree = self._left.nearest_neighbor(key, depth + 1)
             hypersphere_check = self._right
         if key[axis] > self._key[axis]:
             if self._right is not None:
-                best = closer(key, best, self._right.nearest_neighbor(key, depth + 1))
+                best_subtree = self._right.nearest_neighbor(key, depth + 1)
             hypersphere_check = self._left
+
+        if best_subtree is not None:
+            # Check if subtree has better result
+            best_subtree_dist = euclid_squared(best_subtree[0], key)
+            if best_subtree_dist < best_dist:
+                best = best_subtree
+                best_dist = best_subtree_dist
+
         # Check if hyperplane intersects hypersphere
         if hypersphere_check is not None:
-            radius = euclid(key, best)
+            radius = euclid(key, best[0])
             if abs(key[axis] - hypersphere_check._key[axis]) <= radius:
-                best = closer(key, best, hypersphere_check.nearest_neighbor(key, depth + 1))
-        return best
+                hypersphere_best = hypersphere_check.nearest_neighbor(key, depth + 1)
+                hypersphere_dist = euclid_squared(hypersphere_best[0], key)
+                if hypersphere_dist < best_dist:
+                    best = hypersphere_best
 
-def closer(center, p1, p2):
-    '''
-        Returns the point closer to center
-    '''
-    return p1 if euclid_squared(center, p1) < euclid_squared(center, p2) else p2
+        return best
 
 def euclid(p1, p2):
     '''
@@ -132,6 +149,7 @@ def __main__():
 
 @client.event
 async def on_ready():
+    global emoji_tree
     if os.path.isfile(PICKLE_FILE):
         print('Cached file found, loading into memory')
         with open(PICKLE_FILE, 'rb') as f:
@@ -147,14 +165,19 @@ async def on_message(message):
         if message.content.startswith(COMMAND_PREFIX):
             command = message.content[1:]
             if command.startswith('help'):
+                print('Help invoked')
                 await display_help(message)
             elif command.startswith('trout'):
+                print('Trout invoked')
                 await trout(message)
             elif command.startswith('dildo'):
+                print('Trout invoked')
                 await trout(message, 'dildo')
             elif command.startswith('roll'):
+                print('Roll invoked')
                 await roll(message)
             elif command.startswith('mosaicify'):
+                print('Mosaicify invoked')
                 await mosaicify(message.channel, message.attachments)
 
 async def mosaicify(channel, image):
@@ -162,13 +185,14 @@ async def mosaicify(channel, image):
         await channel.send('Error: Expected an image attachment')
     else:
         image = image[0]
-        written = image.save(open(image.filename, 'wb'))
+        written = await image.save(open(image.filename, 'wb'))
         if written != image.size:
             await channel.send('Unexpected error processing attachment, please try again.')
         else:
             mosaic = compute_mosaic(image.filename)
             if mosaic is not None:
-                await channel.send(mosaic)
+                for row in mosaic:
+                    await channel.send(row)
             else:
                 await channel.send('Error: Image is not supported or has bad extension type')
             os.remove(image.filename)
@@ -183,9 +207,14 @@ async def roll(message):
         num_dices = int(num_dices) if num_dices else 1
         faces = int(faces)
 
-        if faces > 0:
-            roll_value = sum([random.randint(1, faces) for d in range(num_dices)])
-            await channel.send('Rolled a {}'.format(roll_value))
+        if num_dices > 20:
+            await channel.send('You\'re getting a bit ambitious with the number of die')
+        elif faces > 0:
+            rolls = [random.randint(1, faces) for d in range(num_dices)]
+            if num_dices > 1:
+                await channel.send('Roll: {} = {}'.format(' + '.join(map(str, rolls)), sum(rolls)))
+            else:
+                await channel.send('Rolled a {}'.format(rolls[0]))
         else:
             await channel.send('Invalid number of faces on die')
     else:
@@ -193,22 +222,38 @@ async def roll(message):
                            .format(COMMAND_PREFIX))
 
 def compute_mosaic(filename):
+    emoji = []
     img = resize_bounds(Image.open(filename).convert('RGB'))
-    #TODO implement
-    # resize image to closest multiple of 32
-        # sustain correct aspect ratio
-    # iterate over blocks of 32, compute avg and apply mapping
+    print('Image dim is {}x{}'.format(img.width, img.height))
+    emoji_str = ''
+    row_count = 0
+    for y in range(0, img.height, EMOJI_DIM):
+        for x in range(0, img.width, EMOJI_DIM):
+            avg_color = calc_avg_color(img.crop((x, y, x + EMOJI_DIM, y + EMOJI_DIM)))
+            emoji_str += emoji_tree.nearest_emoji(avg_color)
+        row_count += 1
+        if row_count >= MAX_PRINTABLE_ROWS:
+            emoji.append(emoji_str)
+            emoji_str = ''
+            row_count = 0
+        else:
+            emoji_str += '\n'
+
+    print('Computed emoji\n{}'.format('\n'.join(emoji)))
+    return emoji
+
 
 def resize_bounds(img):
     '''
         Resizes given image and constrains it within max dimensions.
     '''
+    ratio = 1
     if img.width > MAX_IMG_WIDTH or img.height > MAX_IMG_HEIGHT:
         if img.width > img.height:
             ratio = img.width / MAX_IMG_WIDTH
         else:
             ratio = img.height / MAX_IMG_HEIGHT
-    return img.resize((img.width * ratio, img.height * ratio))
+    return img.resize((int(img.width * ratio), int(img.height * ratio)))
 
 
 async def display_help(message):
@@ -258,6 +303,7 @@ async def trout(message, weapon='trout'):
 
 # Index available emojis for use
 def index_emojis():
+    global emoji_tree
     emoji_list = []
 
     with open(EMOJI_DATA_FILE, 'r') as f:
@@ -277,9 +323,9 @@ def index_emojis():
                     emoji_file = EMOJI_RES_DIR + codepoint_str + '.png'
                     if os.path.isfile(emoji_file):
                         img = Image.open(emoji_file)
-                        avg_color = calc_avg_color(codepoint_str, img.convert('RGB'))
+                        avg_color = calc_avg_color(img.convert('RGB'))
                         print('File {} has average color {}'.format(emoji_file, avg_color))
-                        emoji_list.append((avg_color, codepoint_str))
+                        emoji_list.append((avg_color, chr(int(codepoint_str, 16))))
 
     emoji_tree = construct_kdtree(emoji_list)
     
@@ -287,7 +333,7 @@ def index_emojis():
     with open(PICKLE_FILE, 'wb') as f:
         pickle.dump(emoji_tree, f)
 
-def calc_avg_color(codepoint_str, img):
+def calc_avg_color(img):
     total_color = tuple(sum(color) for color in zip(*img.getdata()))
     return tuple(map(lambda x: x // (img.width * img.height), total_color))
 
@@ -297,6 +343,3 @@ def retrieve_token():
 
 if __name__ == '__main__':
     __main__()
-
-l = [((1, 9), 0), ((2, 3), 1), ((4, 1), 2), ((3, 7), 3), ((5, 4), 4), ((6, 8), 5), ((7, 2), 6), ((8, 8), 7), ((7, 9), 8), ((9, 6), 9)]
-t = construct_kdtree(l)
